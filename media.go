@@ -97,6 +97,8 @@ type ExportConfig struct {
 	VolumeTemplate string
 	BookTemplate   string
 	Workers        int
+	WebpConvert    bool
+	WebpQuality    int
 }
 
 type Page struct {
@@ -111,8 +113,17 @@ func (self *Page) export(dir string, config ExportConfig) error {
 		return err
 	}
 
-	if err := copyFile(filepath.Join(dir, name), self.Node.Path); err != nil {
-		return err
+	srcIsWebp := strings.ToLower(filepath.Ext(self.Node.Path)) == ".webp"
+
+	if config.WebpConvert && !srcIsWebp {
+		destName := stripExt(name) + ".webp"
+		if err := ConvertToWebP(self.Node.Path, filepath.Join(dir, destName), config.WebpQuality); err != nil {
+			return err
+		}
+	} else {
+		if err := copyFile(filepath.Join(dir, name), self.Node.Path); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -212,8 +223,13 @@ func (self *Book) Export(path string, config ExportConfig, allocator *TempDirAll
 		}
 	}
 
+	workers := config.Workers
+	if workers <= 0 {
+		workers = 1
+	}
+
 	var (
-		volumeChan    = make(chan *Volume, 4)
+		volumeChan    = make(chan *Volume, workers)
 		volumeErr     error
 		volumeErrLock sync.Mutex
 		volumeWg      sync.WaitGroup
@@ -440,6 +456,8 @@ func FlatPack(inputPath, outputDir string, config ExportConfig, allocator *TempD
 
 	report := &FlatPackReport{}
 
+	var rootImages []string
+
 	for _, entry := range entries {
 		entryPath := filepath.Join(inputPath, entry.Name())
 		entryName := entry.Name()
@@ -468,6 +486,18 @@ func FlatPack(inputPath, outputDir string, config ExportConfig, allocator *TempD
 			} else {
 				report.recordPacked(bookName)
 			}
+		} else if isImagePath(entryName) {
+			rootImages = append(rootImages, entryPath)
+		}
+	}
+
+	if len(rootImages) > 0 {
+		sort.Strings(rootImages)
+		bookName := filepath.Base(inputPath)
+		if err := flatPackImages(rootImages, outputDir, bookName, config, allocator); err != nil {
+			report.recordFailed(bookName, err)
+		} else {
+			report.recordPacked(bookName)
 		}
 	}
 
@@ -578,14 +608,62 @@ func flatPackImages(images []string, outputDir, bookName string, config ExportCo
 		}
 	}
 
+	type imgTask struct {
+		index   int
+		imgPath string
+	}
+
+	workers := config.Workers
+	if workers <= 0 {
+		workers = 1
+	}
+
+	taskChan := make(chan imgTask, len(images))
+	var (
+		imgErr     error
+		imgErrLock sync.Mutex
+		imgWg      sync.WaitGroup
+	)
+
+	for i := 0; i < workers; i++ {
+		imgWg.Add(1)
+		go func() {
+			defer imgWg.Done()
+			for task := range taskChan {
+				name, err := buildTemplatedName(config.PageTemplate, task.imgPath, task.index+1, len(images))
+				if err != nil {
+					imgErrLock.Lock()
+					imgErr = err
+					imgErrLock.Unlock()
+					continue
+				}
+				srcIsWebp := strings.ToLower(filepath.Ext(task.imgPath)) == ".webp"
+				if config.WebpConvert && !srcIsWebp {
+					destName := stripExt(name) + ".webp"
+					if err := ConvertToWebP(task.imgPath, filepath.Join(targetDir, destName), config.WebpQuality); err != nil {
+						imgErrLock.Lock()
+						imgErr = err
+						imgErrLock.Unlock()
+					}
+				} else {
+					if err := copyFile(filepath.Join(targetDir, name), task.imgPath); err != nil {
+						imgErrLock.Lock()
+						imgErr = err
+						imgErrLock.Unlock()
+					}
+				}
+			}
+		}()
+	}
+
 	for i, imgPath := range images {
-		name, err := buildTemplatedName(config.PageTemplate, imgPath, i+1, len(images))
-		if err != nil {
-			return err
-		}
-		if err := copyFile(filepath.Join(targetDir, name), imgPath); err != nil {
-			return err
-		}
+		taskChan <- imgTask{index: i, imgPath: imgPath}
+	}
+	close(taskChan)
+	imgWg.Wait()
+
+	if imgErr != nil {
+		return imgErr
 	}
 
 	if compress {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 
 	"codeberg.org/foosoft/mex"
 )
@@ -50,7 +51,9 @@ func main() {
 		pageTemplate    = flag.String("label-page", "page_{{.Index}}{{.Ext}}", "page name template")
 		volumeTemplate  = flag.String("label-volume", "vol_{{.Index}}", "volume name template")
 		bookTemplate    = flag.String("label-book", "{{.Name}}", "book name template")
-		workers         = flag.Int("workers", 4, "number of simultaneous workers")
+		workers         = flag.Int("workers", runtime.NumCPU(), "number of simultaneous workers")
+		webpConvert     = flag.Bool("webp", false, "convert images to webp using magick before packing")
+		webpQuality     = flag.Int("webp-quality", 80, "webp conversion quality (1-100)")
 	)
 
 	flag.Usage = func() {
@@ -69,6 +72,8 @@ func main() {
 		VolumeTemplate: *volumeTemplate,
 		BookTemplate:   *bookTemplate,
 		Workers:        *workers,
+		WebpConvert:    *webpConvert,
+		WebpQuality:    *webpQuality,
 	}
 
 	if *compressBook {

@@ -17,8 +17,9 @@ var (
 var (
 	archExt = ".cbz"
 
-	rarToolNames = []string{"unrar"}
-	zipToolNames = []string{"7za", "7z"}
+	rarToolNames    = []string{"unrar"}
+	zipToolNames    = []string{"7za", "7z"}
+	magickToolNames = []string{"magick"}
 )
 
 func findToolByName(names ...string) (string, error) {
@@ -29,6 +30,31 @@ func findToolByName(names ...string) (string, error) {
 	}
 
 	return "", RequiredToolNotInstalled
+}
+
+func ConvertToWebP(inputPath, outputPath string, quality int) error {
+	toolPath, err := findToolByName(magickToolNames...)
+	if err != nil {
+		return RequiredToolNotInstalled
+	}
+
+	toolCmd := exec.Command(
+		toolPath,
+		inputPath,
+		"-resize", "16383x16383>",
+		"-quality", fmt.Sprintf("%d", quality),
+		"-define", "webp:sharp-yuv=true",
+		"-limit", "thread", "1",
+		outputPath,
+	)
+
+	log.Printf("converting to webp: %s...", inputPath)
+	if output, err := toolCmd.CombinedOutput(); err != nil {
+		fmt.Println(string(output))
+		return errors.Join(fmt.Errorf("webp conversion of %s failed", inputPath), err)
+	}
+
+	return nil
 }
 
 func Compress(archPath, contentDir string) error {
